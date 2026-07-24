@@ -1,0 +1,21 @@
+{
+  "name": "LoogaSoft.Shadows.Editor",
+  "rootNamespace": "LoogaSoft.Shadows.Editor",
+  "references": [
+    "LoogaSoft.Shadows.Runtime",
+    "Unity.RenderPipelines.Core.Editor",
+    "Unity.RenderPipelines.Universal.Runtime",
+    "Unity.RenderPipelines.Universal.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
