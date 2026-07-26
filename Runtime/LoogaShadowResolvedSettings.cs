@@ -55,6 +55,14 @@ namespace LoogaSoft.Shadows
 
         public int TileResolution => AtlasResolution / 2;
 
+        public int GetClipmapResolution(int level)
+        {
+            if (Quality == LoogaShadowQuality.Ultra)
+                return level == 0 ? 4096 : 2048;
+
+            return TileResolution;
+        }
+
         public static LoogaShadowResolvedSettings Resolve(
             LoogaShadowSettings rendererSettings,
             LoogaShadowLight shadowLight)

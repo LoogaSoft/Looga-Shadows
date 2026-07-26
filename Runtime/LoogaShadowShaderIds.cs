@@ -12,11 +12,26 @@ namespace LoogaSoft.Shadows
         public static readonly int CameraNormalsTexture = Shader.PropertyToID("_CameraNormalsTexture");
         public static readonly int VirtualShadowAtlas = Shader.PropertyToID("_LoogaVirtualShadowAtlas");
         public static readonly int VirtualShadowDepthAtlas = Shader.PropertyToID("_LoogaVirtualShadowDepthAtlas");
+        public static readonly int[] VirtualShadowClipmaps =
+        {
+            Shader.PropertyToID("_LoogaVirtualShadowClipmap0"),
+            Shader.PropertyToID("_LoogaVirtualShadowClipmap1"),
+            Shader.PropertyToID("_LoogaVirtualShadowClipmap2"),
+            Shader.PropertyToID("_LoogaVirtualShadowClipmap3")
+        };
+        public static readonly int[] VirtualShadowDepthClipmaps =
+        {
+            Shader.PropertyToID("_LoogaVirtualShadowDepthClipmap0"),
+            Shader.PropertyToID("_LoogaVirtualShadowDepthClipmap1"),
+            Shader.PropertyToID("_LoogaVirtualShadowDepthClipmap2"),
+            Shader.PropertyToID("_LoogaVirtualShadowDepthClipmap3")
+        };
         public static readonly int UrpScreenSpaceShadowTexture = Shader.PropertyToID("_ScreenSpaceShadowmapTexture");
         public static readonly int ShadowsEnabled = Shader.PropertyToID("_LoogaShadowsEnabled");
         public static readonly int WorldToShadow = Shader.PropertyToID("_LoogaWorldToShadow");
         public static readonly int ClipmapCenters = Shader.PropertyToID("_LoogaClipmapCenters");
         public static readonly int ClipmapRadii = Shader.PropertyToID("_LoogaClipmapRadii");
+        public static readonly int ClipmapRects = Shader.PropertyToID("_LoogaClipmapRects");
         public static readonly int ClipmapCount = Shader.PropertyToID("_LoogaClipmapCount");
         public static readonly int AtlasSize = Shader.PropertyToID("_LoogaVirtualShadowAtlasSize");
         public static readonly int LightDirection = Shader.PropertyToID("_LoogaShadowLightDirection");

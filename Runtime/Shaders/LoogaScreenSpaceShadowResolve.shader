@@ -90,7 +90,8 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
         {
             float2 localUv = LoogaAtlasToLocalUv(shadowCoord.xy, level);
             float guard = _LoogaVirtualShadowAtlasSize.w * 1.5;
-            return all(localUv >= guard) && all(localUv <= 1.0 - guard) &&
+            return all(localUv >= guard) &&
+                all(localUv <= 1.0 - guard) &&
                 shadowCoord.z > 0.0 && shadowCoord.z < 1.0;
         }
 
@@ -109,7 +110,9 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             return -1;
         }
 
-        float LoogaSampleComparisonDepth(float2 uv, float comparisonDepth)
+        float LoogaSampleComparisonDepth(
+            float2 uv,
+            float comparisonDepth)
         {
             return SAMPLE_TEXTURE2D_SHADOW(
                 _LoogaVirtualShadowAtlas,
@@ -129,7 +132,9 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
         #else
             float comparisonDepth = receiverDepth - normalizedBias;
         #endif
-            return LoogaSampleComparisonDepth(uv, comparisonDepth);
+            return LoogaSampleComparisonDepth(
+                uv,
+                comparisonDepth);
         }
 
         float LoogaSampleRawDepth(float2 uv)
@@ -237,7 +242,8 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
 
         float LoogaRawVisibility(
             float4 shadowCoord,
-            float receiverBiasWorld)
+            float receiverBiasWorld,
+            int level)
         {
             return LoogaSampleComparison(
                 shadowCoord.xy,
@@ -252,7 +258,10 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             float sampleRotation,
             float2 receiverDepthGradient,
             float receiverBiasWorld,
-            out float blockerConfidence)
+            out float blockerConfidence,
+            out float nearBlockerDistance,
+            out float farBlockerDistance,
+            out float blockerLayerConfidence)
         {
             int blockerSampleCount = clamp(
                 (int)_LoogaShadowSampleCounts.x,
@@ -267,7 +276,10 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             float blockerDistanceSum = 0.0;
             float blockerWeightSum = 0.0;
             float unweightedBlockerDistanceSum = 0.0;
+            float unweightedBlockerDistanceSquaredSum = 0.0;
             float unweightedBlockerCount = 0.0;
+            float minimumBlockerDistance = 1e20;
+            float maximumBlockerDistance = 0.0;
             [loop]
             for (int sampleIndex = 0; sampleIndex < LOOGA_MAX_BLOCKER_SAMPLES; sampleIndex++)
             {
@@ -327,7 +339,15 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                     storedDepth,
                     receiverDepth);
                 unweightedBlockerDistanceSum += blockerDistance;
+                unweightedBlockerDistanceSquaredSum +=
+                    blockerDistance * blockerDistance;
                 unweightedBlockerCount += 1.0;
+                minimumBlockerDistance = min(
+                    minimumBlockerDistance,
+                    blockerDistance);
+                maximumBlockerDistance = max(
+                    maximumBlockerDistance,
+                    blockerDistance);
                 float coneRadius = max(
                     blockerDistance * sourceSlope,
                     worldTexel);
@@ -350,10 +370,54 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 0.0,
                 1.0,
                 saturate(blockerWeightSum));
-            return lerp(
+            float averageBlockerDistance = lerp(
                 unweightedBlockerDistance,
                 coneBlockerDistance,
                 coneBlend);
+            float blockerVariance = max(
+                unweightedBlockerDistanceSquaredSum /
+                    max(unweightedBlockerCount, 0.0001) -
+                    unweightedBlockerDistance *
+                    unweightedBlockerDistance,
+                0.0);
+            float blockerDeviation = sqrt(blockerVariance);
+            float blockerSpan = max(
+                maximumBlockerDistance - minimumBlockerDistance,
+                0.0);
+            float distanceScale = max(
+                unweightedBlockerDistance,
+                worldTexel * 8.0);
+            float absoluteSeparationThreshold = max(
+                worldTexel * 6.0,
+                0.01);
+            float spanConfidence = smoothstep(
+                absoluteSeparationThreshold,
+                absoluteSeparationThreshold * 3.0,
+                blockerSpan);
+            float relativeSpanConfidence = smoothstep(
+                0.2,
+                0.75,
+                blockerSpan / distanceScale);
+            float deviationConfidence = smoothstep(
+                0.08,
+                0.3,
+                blockerDeviation / distanceScale);
+            float supportConfidence = saturate(
+                (unweightedBlockerCount - 1.0) / 3.0);
+            blockerLayerConfidence =
+                spanConfidence *
+                relativeSpanConfidence *
+                deviationConfidence *
+                supportConfidence;
+            nearBlockerDistance = lerp(
+                averageBlockerDistance,
+                minimumBlockerDistance,
+                blockerLayerConfidence);
+            farBlockerDistance = lerp(
+                averageBlockerDistance,
+                maximumBlockerDistance,
+                blockerLayerConfidence);
+            return averageBlockerDistance;
         }
 
         float LoogaFilterPCSS(
@@ -370,7 +434,8 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             if (filterRadiusWorld <= worldTexel * 0.5)
                 return LoogaRawVisibility(
                     shadowCoord,
-                    receiverBiasWorld);
+                    receiverBiasWorld,
+                    level);
 
             int filterSampleCount = clamp(
                 (int)_LoogaShadowSampleCounts.y,
@@ -431,20 +496,16 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 normalWS,
                 level);
             float worldTexel = _LoogaClipmapRadii[level].y;
-            float normalLightAlignment = saturate(abs(dot(
-                normalize(normalWS),
-                normalize(_LoogaShadowLightDirection.xyz))));
-            float receiverSlope = sqrt(max(
-                1.0 - normalLightAlignment * normalLightAlignment,
-                0.0)) / max(normalLightAlignment, 0.1);
+            // Receiver-plane depth gradients account for slope at every PCSS
+            // tap. A second slope-scaled comparison bias detaches shadows from
+            // contacting geometry, so retain only a sub-texel precision floor.
             float receiverBiasWorld = max(
                 _LoogaShadowBiasData.x,
-                worldTexel * min(
-                    1.0 + receiverSlope * 1.5,
-                    12.0));
+                worldTexel * 0.0625);
             result.rawVisibility = LoogaRawVisibility(
                 shadowCoord,
-                receiverBiasWorld);
+                receiverBiasWorld,
+                level);
             result.clipmap = level;
             float sourceSlope = tan(radians(_LoogaSoftShadowData.x) * 0.5) *
                 _LoogaSoftShadowData.y;
@@ -456,6 +517,9 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             }
 
             float blockerConfidence;
+            float nearBlockerDistance;
+            float farBlockerDistance;
+            float blockerLayerConfidence;
             float blockerRotation = sampleRotation;
             float blockerDistance = LoogaFindAverageBlockerDistance(
                 shadowCoord,
@@ -464,7 +528,10 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 blockerRotation,
                 receiverDepthGradient,
                 receiverBiasWorld,
-                blockerConfidence);
+                blockerConfidence,
+                nearBlockerDistance,
+                farBlockerDistance,
+                blockerLayerConfidence);
             if (blockerConfidence <= 0.0)
             {
                 result.penumbra = 0.0;
@@ -475,26 +542,45 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             result.penumbra = min(
                 blockerDistance * sourceSlope,
                 _LoogaSoftShadowData.z);
-            result.visibility = LoogaFilterPCSS(
-                shadowCoord,
-                level,
-                result.penumbra,
-                blockerDistance,
-                blockerRotation,
-                receiverDepthGradient,
-                receiverBiasWorld);
+            result.visibility = result.rawVisibility;
             return result;
         }
 
-        float LoogaClipmapEdgeBlend(float4 shadowCoord, int level)
+        float LoogaClipmapEdgeBlend(
+            float4 shadowCoord,
+            int level,
+            float penumbraWorld)
         {
             if (level + 1 >= _LoogaClipmapCount)
                 return 0.0;
 
             float2 localUv = LoogaAtlasToLocalUv(shadowCoord.xy, level);
             float edgeDistance = min(min(localUv.x, localUv.y), min(1.0 - localUv.x, 1.0 - localUv.y));
+            float radius = _LoogaClipmapRadii[level].x;
+            float blockerSearchWorld = min(
+                _LoogaSoftShadowData.z,
+                radius * 0.45);
+            float footprintBlend = smoothstep(
+                0.10,
+                0.20,
+                penumbraWorld / max(radius, 0.00001));
+            // Leave the current clipmap before either PCSS kernel reaches its border.
+            float kernelMargin = max(
+                blockerSearchWorld,
+                penumbraWorld) / max(radius * 2.0, 0.00001);
+            kernelMargin += _LoogaVirtualShadowAtlasSize.w * 1.5;
+            if (kernelMargin >= 0.5)
+                return 1.0;
+
             float blendWidth = max(_LoogaSoftShadowData.w, 0.0001);
-            return 1.0 - smoothstep(0.0, blendWidth, edgeDistance);
+            float edgeBlend = 1.0 - smoothstep(
+                kernelMargin,
+                min(kernelMargin + blendWidth, 0.5),
+                edgeDistance);
+            // A broad filter is better represented by the next clipmap even
+            // at the center of this one. This prevents the footprint of a tiny
+            // high-resolution level from appearing inside wide penumbrae.
+            return max(edgeBlend, footprintBlend);
         }
 
         LoogaShadowEvaluation LoogaEvaluateShadow(
@@ -517,9 +603,19 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 level,
                 normalWS,
                 sampleRotation);
-            float edgeBlend = LoogaClipmapEdgeBlend(LoogaGetShadowCoordinate(biasedPosition, level), level);
-            if (edgeBlend > 0.0)
+            [unroll]
+            for (int transition = 0; transition < 3; transition++)
             {
+                if (level + 1 >= _LoogaClipmapCount)
+                    break;
+
+                float edgeBlend = LoogaClipmapEdgeBlend(
+                    LoogaGetShadowCoordinate(biasedPosition, level),
+                    level,
+                    result.penumbra);
+                if (edgeBlend <= 0.0)
+                    break;
+
                 LoogaShadowEvaluation next = LoogaEvaluateLevel(
                     biasedPosition,
                     level + 1,
@@ -528,6 +624,9 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 result.visibility = lerp(result.visibility, next.visibility, edgeBlend);
                 result.rawVisibility = lerp(result.rawVisibility, next.rawVisibility, edgeBlend);
                 result.penumbra = lerp(result.penumbra, next.penumbra, edgeBlend);
+                level++;
+                if (edgeBlend < 0.999)
+                    break;
             }
 
             float cameraDistance = distance(positionWS, _WorldSpaceCameraPos);
@@ -537,6 +636,119 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 cameraDistance);
             result.visibility = lerp(result.visibility, 1.0, distanceFade);
             result.rawVisibility = lerp(result.rawVisibility, 1.0, distanceFade);
+            return result;
+        }
+
+        LoogaShadowEvaluation LoogaFilterLevel(
+            float3 positionWS,
+            int level,
+            float3 normalWS,
+            float penumbraWorld,
+            float sampleRotation)
+        {
+            LoogaShadowEvaluation result;
+            float4 shadowCoord = LoogaGetShadowCoordinate(positionWS, level);
+            float2 receiverDepthGradient = LoogaReceiverDepthGradient(
+                normalWS,
+                level);
+            float worldTexel = _LoogaClipmapRadii[level].y;
+            float receiverBiasWorld = max(
+                _LoogaShadowBiasData.x,
+                worldTexel * 0.0625);
+            result.rawVisibility = LoogaRawVisibility(
+                shadowCoord,
+                receiverBiasWorld,
+                level);
+            result.clipmap = level;
+            result.penumbra = penumbraWorld;
+            float sourceSlope = tan(radians(_LoogaSoftShadowData.x) * 0.5) *
+                _LoogaSoftShadowData.y;
+            if (sourceSlope <= 0.000001 || penumbraWorld <= 0.000001)
+            {
+                result.visibility = result.rawVisibility;
+                return result;
+            }
+
+            float blockerDistance = penumbraWorld / sourceSlope;
+            result.visibility = LoogaFilterPCSS(
+                shadowCoord,
+                level,
+                penumbraWorld,
+                blockerDistance,
+                sampleRotation,
+                receiverDepthGradient,
+                receiverBiasWorld);
+            return result;
+        }
+
+        LoogaShadowEvaluation LoogaFilterShadow(
+            float3 positionWS,
+            float3 normalWS,
+            float penumbraWorld,
+            float sampleRotation)
+        {
+            LoogaShadowEvaluation lit = (LoogaShadowEvaluation)0;
+            lit.visibility = 1.0;
+            lit.rawVisibility = 1.0;
+            lit.clipmap = -1.0;
+
+            float3 biasedPosition =
+                positionWS + normalWS * _LoogaShadowBiasData.y;
+            int level = LoogaFindClipmap(biasedPosition);
+            if (level < 0)
+                return lit;
+
+            LoogaShadowEvaluation result = LoogaFilterLevel(
+                biasedPosition,
+                level,
+                normalWS,
+                penumbraWorld,
+                sampleRotation);
+            [unroll]
+            for (int transition = 0; transition < 3; transition++)
+            {
+                if (level + 1 >= _LoogaClipmapCount)
+                    break;
+
+                float edgeBlend = LoogaClipmapEdgeBlend(
+                    LoogaGetShadowCoordinate(biasedPosition, level),
+                    level,
+                    penumbraWorld);
+                if (edgeBlend <= 0.0)
+                    break;
+
+                LoogaShadowEvaluation next = LoogaFilterLevel(
+                    biasedPosition,
+                    level + 1,
+                    normalWS,
+                    penumbraWorld,
+                    sampleRotation);
+                result.visibility = lerp(
+                    result.visibility,
+                    next.visibility,
+                    edgeBlend);
+                result.rawVisibility = lerp(
+                    result.rawVisibility,
+                    next.rawVisibility,
+                    edgeBlend);
+                level++;
+                if (edgeBlend < 0.999)
+                    break;
+            }
+
+            float cameraDistance = distance(positionWS, _WorldSpaceCameraPos);
+            float distanceFade = smoothstep(
+                _LoogaShadowDistanceData.y,
+                _LoogaShadowDistanceData.x,
+                cameraDistance);
+            result.visibility = lerp(
+                result.visibility,
+                1.0,
+                distanceFade);
+            result.rawVisibility = lerp(
+                result.rawVisibility,
+                1.0,
+                distanceFade);
             return result;
         }
 
@@ -570,28 +782,68 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             return half4(shadow.visibility, shadow.penumbra, 0.0, 1.0);
         }
 
+        half4 FragRefilter(Varyings input) : SV_Target
+        {
+            float2 uv = input.texcoord;
+            float deviceDepth = SampleSceneDepth(uv);
+            if (LoogaIsSky(deviceDepth))
+                return half4(1.0, 0.0, 0.0, 1.0);
+
+            float3 positionWS = LoogaReconstructWorldPosition(uv, deviceDepth);
+            float3 normalWS = normalize(SampleSceneNormals(uv));
+            float penumbraWorld = SAMPLE_TEXTURE2D_X(
+                _BlitTexture,
+                sampler_PointClamp,
+                uv).g;
+            float sampleRotation =
+                LoogaReceiverNoise(uv) * (2.0 * LOOGA_PI);
+            LoogaShadowEvaluation shadow = LoogaFilterShadow(
+                positionWS,
+                normalWS,
+                penumbraWorld,
+                sampleRotation);
+            return half4(
+                shadow.visibility,
+                penumbraWorld,
+                0.0,
+                1.0);
+        }
+
         half4 FragDenoise(Varyings input) : SV_Target
         {
             float2 centerUv = input.texcoord;
             float centerDeviceDepth = SampleSceneDepth(centerUv);
-            float2 centerShadow = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, centerUv).rg;
+            float2 centerShadow = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_PointClamp, centerUv).rg;
             if (LoogaIsSky(centerDeviceDepth))
                 return half4(centerShadow, 0.0, 1.0);
 
             float3 centerPosition = LoogaReconstructWorldPosition(centerUv, centerDeviceDepth);
             float3 centerNormal = normalize(SampleSceneNormals(centerUv));
-            float receiverFootprint = max(length(ddx(centerPosition)), length(ddy(centerPosition)));
+            // Reconstruct the pixel footprint at the center depth. Screen-space
+            // derivatives span both surfaces at silhouettes and would otherwise
+            // relax the bilateral depth rejection exactly where it must be strict.
+            float3 footprintPositionX = LoogaReconstructWorldPosition(
+                saturate(centerUv + float2(_CameraDepthTexture_TexelSize.x, 0.0)),
+                centerDeviceDepth);
+            float3 footprintPositionY = LoogaReconstructWorldPosition(
+                saturate(centerUv + float2(0.0, _CameraDepthTexture_TexelSize.y)),
+                centerDeviceDepth);
+            float receiverFootprint = max(
+                length(footprintPositionX - centerPosition),
+                length(footprintPositionY - centerPosition));
             float2 direction = _LoogaDenoiseDirection.xy * _BlitTexture_TexelSize.xy;
+            float denoiseStridePixels = max(
+                abs(_LoogaDenoiseDirection.x) +
+                abs(_LoogaDenoiseDirection.y),
+                1.0);
             float visibility = 0.0;
             float penumbra = 0.0;
+            float maximumPenumbra = centerShadow.y;
             float totalWeight = 0.0;
 
             [unroll]
-            for (int sampleIndex = -4; sampleIndex <= 4; sampleIndex++)
+            for (int sampleIndex = -2; sampleIndex <= 2; sampleIndex++)
             {
-                // PCSS already establishes the physical penumbra width. This
-                // pass only removes sampling noise, so keep its taps contiguous
-                // and include neighboring pixels that missed blocker support.
                 float sampleOffset = sampleIndex;
                 float2 sampleUv = saturate(
                     centerUv + direction * sampleOffset);
@@ -602,9 +854,10 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 float3 samplePosition = LoogaReconstructWorldPosition(sampleUv, sampleDeviceDepth);
                 float3 sampleNormal = normalize(SampleSceneNormals(sampleUv));
                 float planeDistance = abs(dot(samplePosition - centerPosition, centerNormal));
+                float pixelDistance = abs(sampleOffset) * denoiseStridePixels;
                 float planeTolerance = max(
                     0.002,
-                    receiverFootprint * (1.5 + abs(sampleOffset)));
+                    receiverFootprint * (1.5 + pixelDistance));
                 float planeWeight = 1.0 - smoothstep(
                     planeTolerance,
                     planeTolerance * 3.0,
@@ -614,21 +867,34 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                     0.95,
                     dot(centerNormal, sampleNormal));
                 float spatialWeight = exp2(
-                    -0.125 * sampleIndex * sampleIndex);
+                    -0.5 * sampleIndex * sampleIndex);
                 float sampleWeight = spatialWeight * planeWeight * normalWeight;
                 float2 sampleShadow = SAMPLE_TEXTURE2D_X(
                     _BlitTexture,
-                    sampler_LinearClamp,
+                    sampler_PointClamp,
                     sampleUv).rg;
+                maximumPenumbra = max(maximumPenumbra, sampleShadow.y);
                 visibility += sampleShadow.x * sampleWeight;
                 penumbra += sampleShadow.y * sampleWeight;
                 totalWeight += sampleWeight;
             }
 
-            float resolvedVisibility = visibility / max(totalWeight, 0.0001);
+            float denoiseStrength = smoothstep(
+                receiverFootprint * 1.5,
+                receiverFootprint * 6.0,
+                maximumPenumbra);
+            float inverseWeight = rcp(max(totalWeight, 0.0001));
+            float resolvedVisibility = lerp(
+                centerShadow.x,
+                visibility * inverseWeight,
+                denoiseStrength);
+            float resolvedPenumbra = lerp(
+                centerShadow.y,
+                penumbra * inverseWeight,
+                denoiseStrength);
             return half4(
                 resolvedVisibility,
-                penumbra / max(totalWeight, 0.0001),
+                resolvedPenumbra,
                 0.0,
                 1.0);
         }
@@ -863,6 +1129,18 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment FragDenoise
+            #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "Filter Denoised Blockers"
+            ZTest Always ZWrite Off Cull Off Blend Off
+            HLSLPROGRAM
+            #pragma target 4.5
+            #pragma vertex Vert
+            #pragma fragment FragRefilter
             #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             ENDHLSL
         }

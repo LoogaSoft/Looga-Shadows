@@ -50,6 +50,7 @@ namespace LoogaSoft.Shadows
         private readonly Matrix4x4[] _projectionMatrices = new Matrix4x4[MaximumClipmapCount];
         private readonly Vector4[] _clipmapCenters = new Vector4[MaximumClipmapCount];
         private readonly Vector4[] _clipmapRadii = new Vector4[MaximumClipmapCount];
+        private readonly Vector4[] _clipmapRects = new Vector4[MaximumClipmapCount];
 
         private Material _resolveMaterial;
         private Texture2D _blueNoiseTexture;
@@ -62,15 +63,18 @@ namespace LoogaSoft.Shadows
 
         private sealed class LoogaShadowFrameData : ContextItem
         {
-            public TextureHandle Atlas = TextureHandle.nullHandle;
-            public TextureHandle DepthAtlas = TextureHandle.nullHandle;
+            public readonly TextureHandle[] Clipmaps = new TextureHandle[MaximumClipmapCount];
+            public readonly TextureHandle[] DepthClipmaps = new TextureHandle[MaximumClipmapCount];
             public TextureHandle RawVisibility = TextureHandle.nullHandle;
             public TextureHandle ResolvedVisibility = TextureHandle.nullHandle;
 
             public override void Reset()
             {
-                Atlas = TextureHandle.nullHandle;
-                DepthAtlas = TextureHandle.nullHandle;
+                for (int level = 0; level < MaximumClipmapCount; level++)
+                {
+                    Clipmaps[level] = TextureHandle.nullHandle;
+                    DepthClipmaps[level] = TextureHandle.nullHandle;
+                }
                 RawVisibility = TextureHandle.nullHandle;
                 ResolvedVisibility = TextureHandle.nullHandle;
             }
@@ -126,7 +130,8 @@ namespace LoogaSoft.Shadows
                 _viewMatrices,
                 _projectionMatrices,
                 _clipmapCenters,
-                _clipmapRadii);
+                _clipmapRadii,
+                _clipmapRects);
 
             _resolvePass.renderPassEvent = GetUsesDeferredLighting(renderer)
                 ? (RenderPassEvent)((int)RenderPassEvent.AfterRenderingGbuffer + 1)
@@ -137,6 +142,7 @@ namespace LoogaSoft.Shadows
                 _worldToShadow,
                 _clipmapCenters,
                 _clipmapRadii,
+                _clipmapRects,
                 -mainLight.transform.forward);
 
             renderer.EnqueuePass(_atlasPass);
@@ -151,6 +157,7 @@ namespace LoogaSoft.Shadows
                     _worldToShadow,
                     _clipmapCenters,
                     _clipmapRadii,
+                    _clipmapRects,
                     -mainLight.transform.forward);
                 renderer.EnqueuePass(_debugOverlayPass);
             }
@@ -292,6 +299,7 @@ namespace LoogaSoft.Shadows
                     _projectionMatrices[level] = Matrix4x4.identity;
                     _clipmapCenters[level] = Vector4.zero;
                     _clipmapRadii[level] = Vector4.zero;
+                    _clipmapRects[level] = Vector4.zero;
                     continue;
                 }
 
@@ -304,7 +312,8 @@ namespace LoogaSoft.Shadows
                 float radius = settings.NearClipmapRadius * Mathf.Pow(coverageRatio, clipmapT);
                 Vector3 desiredCenter = camera.transform.position + cameraForward * radius * 0.35f;
                 Vector3 lightSpaceCenter = lightWorldToLocal.MultiplyPoint3x4(desiredCenter);
-                float worldTexelSize = radius * 2f / settings.TileResolution;
+                int clipmapResolution = settings.TileResolution;
+                float worldTexelSize = radius * 2f / clipmapResolution;
 
                 // Quantized origins keep texels stationary under sub-texel camera motion.
                 lightSpaceCenter.x = Mathf.Floor(lightSpaceCenter.x / worldTexelSize) * worldTexelSize;
@@ -330,11 +339,19 @@ namespace LoogaSoft.Shadows
                 _projectionMatrices[level] = projection;
                 _worldToShadow[level] = GetAtlasShadowTransform(view, projection, level);
                 _clipmapCenters[level] = new Vector4(center.x, center.y, center.z, radius);
-                _clipmapRadii[level] = new Vector4(radius, worldTexelSize, 1f / worldTexelSize, 0f);
+                _clipmapRadii[level] = new Vector4(
+                    radius,
+                    worldTexelSize,
+                    1f / worldTexelSize,
+                    1f / clipmapResolution);
+                _clipmapRects[level] = Vector4.zero;
             }
         }
 
-        private static Matrix4x4 GetAtlasShadowTransform(Matrix4x4 view, Matrix4x4 projection, int level)
+        private static Matrix4x4 GetAtlasShadowTransform(
+            Matrix4x4 view,
+            Matrix4x4 projection,
+            int level)
         {
             // Match URP's ShadowUtils.GetShadowTransform. SetViewProjectionMatrices applies
             // the render-target convention while drawing; receiver coordinates only need the
@@ -383,6 +400,7 @@ namespace LoogaSoft.Shadows
             private Matrix4x4[] _projectionMatrices;
             private Vector4[] _clipmapCenters;
             private Vector4[] _clipmapRadii;
+            private Vector4[] _clipmapRects;
             private readonly Plane[] _shadowCullPlanes = new Plane[6];
 
             public ClipmapAtlasPass()
@@ -422,15 +440,13 @@ namespace LoogaSoft.Shadows
                 return true;
             }
 
-            private sealed class PassData
+            private sealed class PackedPassData
             {
                 public RendererListHandle RendererList0;
                 public RendererListHandle RendererList1;
                 public RendererListHandle RendererList2;
                 public RendererListHandle RendererList3;
-                public int MainLightIndex;
                 public VisibleLight MainLight;
-                public UniversalShadowData ShadowData;
                 public LoogaShadowResolvedSettings Settings;
                 public Matrix4x4[] WorldToShadow;
                 public Matrix4x4[] ViewMatrices;
@@ -454,6 +470,22 @@ namespace LoogaSoft.Shadows
                 }
             }
 
+            private sealed class SeparatePassData
+            {
+                public RendererListHandle RendererList;
+                public int Level;
+                public VisibleLight MainLight;
+                public LoogaShadowResolvedSettings Settings;
+                public Matrix4x4[] WorldToShadow;
+                public Matrix4x4[] ViewMatrices;
+                public Matrix4x4[] ProjectionMatrices;
+                public Vector4[] ClipmapCenters;
+                public Vector4[] ClipmapRadii;
+                public Matrix4x4 CameraView;
+                public Matrix4x4 CameraProjection;
+                public Vector3 CameraPosition;
+            }
+
             public void Setup(
                 int mainLightIndex,
                 VisibleLight mainLight,
@@ -462,7 +494,8 @@ namespace LoogaSoft.Shadows
                 Matrix4x4[] viewMatrices,
                 Matrix4x4[] projectionMatrices,
                 Vector4[] clipmapCenters,
-                Vector4[] clipmapRadii)
+                Vector4[] clipmapRadii,
+                Vector4[] clipmapRects)
             {
                 _mainLightIndex = mainLightIndex;
                 _mainLight = mainLight;
@@ -472,26 +505,45 @@ namespace LoogaSoft.Shadows
                 _projectionMatrices = projectionMatrices;
                 _clipmapCenters = clipmapCenters;
                 _clipmapRadii = clipmapRadii;
+                _clipmapRects = clipmapRects;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
+                const bool useRawShadowDepth = false;
                 if (_mainLight.light == null ||
                     _mainLightIndex < 0 ||
-                    !EnsureCopyDepthPass())
+                    (!useRawShadowDepth && !EnsureCopyDepthPass()))
                 {
                     return;
                 }
 
                 UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
                 UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
-                UniversalLightData lightData = frameData.Get<UniversalLightData>();
-                UniversalShadowData shadowData = frameData.Get<UniversalShadowData>();
                 CullContextData cullContextData = frameData.Get<CullContextData>();
                 CullingResults shadowCullResults = CullShadowCasters(
                     cameraData,
                     cullContextData,
                     renderingData.cullResults);
+                LoogaShadowFrameData shadowFrameData = frameData.GetOrCreate<LoogaShadowFrameData>();
+
+                RecordPackedAtlas(
+                    renderGraph,
+                    frameData,
+                    cameraData,
+                    shadowCullResults,
+                    shadowFrameData,
+                    useRawShadowDepth);
+            }
+
+            private void RecordPackedAtlas(
+                RenderGraph renderGraph,
+                ContextContainer frameData,
+                UniversalCameraData cameraData,
+                CullingResults shadowCullResults,
+                LoogaShadowFrameData shadowFrameData,
+                bool useRawShadowDepth)
+            {
                 RendererListHandle rendererList0 = CreateShadowRendererList(
                     renderGraph,
                     shadowCullResults);
@@ -524,32 +576,34 @@ namespace LoogaSoft.Shadows
                     filterMode = FilterMode.Bilinear,
                     wrapMode = TextureWrapMode.Clamp
                 });
-                TextureHandle depthAtlas = renderGraph.CreateTexture(new TextureDesc(
-                    _settings.AtlasResolution,
-                    _settings.AtlasResolution)
+                TextureHandle depthAtlas = useRawShadowDepth
+                    ? atlas
+                    : renderGraph.CreateTexture(new TextureDesc(
+                        _settings.AtlasResolution,
+                        _settings.AtlasResolution)
+                    {
+                        name = "Looga Virtual Shadow Raw Depth",
+                        format = GraphicsFormat.R16_UNorm,
+                        clearBuffer = false,
+                        filterMode = FilterMode.Point,
+                        wrapMode = TextureWrapMode.Clamp
+                    });
+
+                for (int level = 0; level < MaximumClipmapCount; level++)
                 {
-                    name = "Looga Virtual Shadow Raw Depth",
-                    format = GraphicsFormat.R16_UNorm,
-                    clearBuffer = false,
-                    filterMode = FilterMode.Point,
-                    wrapMode = TextureWrapMode.Clamp
-                });
-                LoogaShadowFrameData shadowFrameData = frameData.GetOrCreate<LoogaShadowFrameData>();
-                shadowFrameData.Atlas = atlas;
-                shadowFrameData.DepthAtlas = depthAtlas;
+                    shadowFrameData.Clipmaps[level] = atlas;
+                    shadowFrameData.DepthClipmaps[level] = depthAtlas;
+                }
 
                 IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass(
                     "Looga Shadows Render Clipmaps",
-                    out PassData passData,
+                    out PackedPassData passData,
                     _profilingSampler);
-
                 passData.RendererList0 = rendererList0;
                 passData.RendererList1 = rendererList1;
                 passData.RendererList2 = rendererList2;
                 passData.RendererList3 = rendererList3;
-                passData.MainLightIndex = _mainLightIndex;
                 passData.MainLight = _mainLight;
-                passData.ShadowData = shadowData;
                 passData.Settings = _settings;
                 passData.WorldToShadow = _worldToShadow;
                 passData.ViewMatrices = _viewMatrices;
@@ -569,8 +623,7 @@ namespace LoogaSoft.Shadows
                     builder.UseRendererList(rendererList3);
                 builder.SetRenderAttachmentDepth(atlas, AccessFlags.Write);
                 builder.AllowGlobalStateModification(true);
-                builder.SetGlobalTextureAfterPass(atlas, LoogaShadowShaderIds.VirtualShadowAtlas);
-                builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
+                builder.SetRenderFunc(static (PackedPassData data, RasterGraphContext context) =>
                 {
                     int tileResolution = data.Settings.TileResolution;
                     Vector3 direction = -data.MainLight.light.transform.forward.normalized;
@@ -578,7 +631,6 @@ namespace LoogaSoft.Shadows
                     context.cmd.SetGlobalVector(LightDirection, new Vector4(direction.x, direction.y, direction.z, 0f));
                     context.cmd.SetGlobalVector(LightPosition, new Vector4(-direction.x, -direction.y, -direction.z, 0f));
                     context.cmd.SetKeyword(LoogaShadowShaderIds.CastingPunctualLightShadow, false);
-
                     context.cmd.SetGlobalDepthBias(1f, 2.5f);
                     for (int level = 0; level < data.Settings.ClipmapCount; level++)
                     {
@@ -589,41 +641,178 @@ namespace LoogaSoft.Shadows
                             tileY * tileResolution,
                             tileResolution,
                             tileResolution));
-                        Vector4 shadowBias = ShadowUtils.GetShadowBias(
-                            ref data.MainLight,
-                            data.MainLightIndex,
-                            data.ShadowData,
-                            data.ProjectionMatrices[level],
-                            tileResolution);
-                        context.cmd.SetGlobalVector(ShadowBias, shadowBias);
+                        float casterDepthBias = -data.ClipmapRadii[level].y * 0.25f;
+                        float casterNormalBias = -data.ClipmapRadii[level].y * 0.125f;
+                        context.cmd.SetGlobalVector(
+                            ShadowBias,
+                            new Vector4(
+                                casterDepthBias,
+                                casterNormalBias,
+                                (float)LightType.Directional,
+                                0f));
                         context.cmd.SetViewProjectionMatrices(
                             data.ViewMatrices[level],
                             data.ProjectionMatrices[level]);
                         context.cmd.DrawRendererList(data.GetRendererList(level));
                     }
                     context.cmd.SetGlobalDepthBias(0f, 0f);
-
                     context.cmd.SetViewProjectionMatrices(data.CameraView, data.CameraProjection);
-                    context.cmd.SetGlobalMatrixArray(LoogaShadowShaderIds.WorldToShadow, data.WorldToShadow);
-                    context.cmd.SetGlobalVectorArray(LoogaShadowShaderIds.ClipmapCenters, data.ClipmapCenters);
-                    context.cmd.SetGlobalVectorArray(LoogaShadowShaderIds.ClipmapRadii, data.ClipmapRadii);
-                    context.cmd.SetGlobalInteger(LoogaShadowShaderIds.ClipmapCount, data.Settings.ClipmapCount);
-                    context.cmd.SetGlobalVector(
-                        LoogaShadowShaderIds.AtlasSize,
-                        new Vector4(
-                            data.Settings.AtlasResolution,
-                            1f / data.Settings.AtlasResolution,
-                            tileResolution,
-                            1f / tileResolution));
+                    context.cmd.SetGlobalMatrixArray(
+                        LoogaShadowShaderIds.WorldToShadow,
+                        data.WorldToShadow);
+                    context.cmd.SetGlobalVectorArray(
+                        LoogaShadowShaderIds.ClipmapCenters,
+                        data.ClipmapCenters);
+                    context.cmd.SetGlobalVectorArray(
+                        LoogaShadowShaderIds.ClipmapRadii,
+                        data.ClipmapRadii);
+                    context.cmd.SetGlobalInteger(
+                        LoogaShadowShaderIds.ClipmapCount,
+                        data.Settings.ClipmapCount);
                 });
                 builder.Dispose();
 
-                _copyDepthPass.Render(
-                    renderGraph,
-                    frameData,
-                    depthAtlas,
-                    atlas,
-                    passName: "Looga Shadows Copy Raw Depth");
+                if (!useRawShadowDepth)
+                {
+                    _copyDepthPass.Render(
+                        renderGraph,
+                        frameData,
+                        depthAtlas,
+                        atlas,
+                        passName: "Looga Shadows Copy Raw Depth");
+                }
+            }
+
+            private void RecordAsymmetricClipmaps(
+                RenderGraph renderGraph,
+                ContextContainer frameData,
+                UniversalCameraData cameraData,
+                CullingResults shadowCullResults,
+                LoogaShadowFrameData shadowFrameData,
+                bool useRawShadowDepth)
+            {
+                for (int level = 0; level < _settings.ClipmapCount; level++)
+                {
+                    int resolution = _settings.GetClipmapResolution(level);
+                    RenderTextureDescriptor descriptor = new(
+                        resolution,
+                        resolution,
+                        RenderTextureFormat.Shadowmap,
+                        32)
+                    {
+                        shadowSamplingMode = ShadowSamplingMode.CompareDepths,
+                        msaaSamples = 1,
+                        useMipMap = false,
+                        autoGenerateMips = false
+                    };
+                    TextureHandle clipmap = renderGraph.CreateTexture(new TextureDesc(descriptor)
+                    {
+                        name = $"Looga Virtual Shadow Clipmap {level}",
+                        clearBuffer = true,
+                        clearColor = SystemInfo.usesReversedZBuffer ? Color.black : Color.white,
+                        filterMode = FilterMode.Bilinear,
+                        wrapMode = TextureWrapMode.Clamp
+                    });
+                    TextureHandle depthClipmap = useRawShadowDepth
+                        ? clipmap
+                        : renderGraph.CreateTexture(new TextureDesc(resolution, resolution)
+                        {
+                            name = $"Looga Virtual Shadow Raw Depth {level}",
+                            format = GraphicsFormat.R16_UNorm,
+                            clearBuffer = false,
+                            filterMode = FilterMode.Point,
+                            wrapMode = TextureWrapMode.Clamp
+                        });
+                    shadowFrameData.Clipmaps[level] = clipmap;
+                    shadowFrameData.DepthClipmaps[level] = depthClipmap;
+                    RendererListHandle rendererList = CreateShadowRendererList(
+                        renderGraph,
+                        shadowCullResults);
+
+                    IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass(
+                        $"Looga Shadows Render Clipmap {level}",
+                        out SeparatePassData passData,
+                        _profilingSampler);
+                    passData.RendererList = rendererList;
+                    passData.Level = level;
+                    passData.MainLight = _mainLight;
+                    passData.Settings = _settings;
+                    passData.WorldToShadow = _worldToShadow;
+                    passData.ViewMatrices = _viewMatrices;
+                    passData.ProjectionMatrices = _projectionMatrices;
+                    passData.ClipmapCenters = _clipmapCenters;
+                    passData.ClipmapRadii = _clipmapRadii;
+                    passData.CameraView = cameraData.GetViewMatrix();
+                    passData.CameraProjection = cameraData.GetProjectionMatrix();
+                    passData.CameraPosition = cameraData.worldSpaceCameraPos;
+
+                    builder.UseRendererList(rendererList);
+                    builder.SetRenderAttachmentDepth(clipmap, AccessFlags.Write);
+                    builder.AllowGlobalStateModification(true);
+                    builder.SetRenderFunc(static (SeparatePassData data, RasterGraphContext context) =>
+                    {
+                        int level = data.Level;
+                        int resolution = data.Settings.GetClipmapResolution(level);
+                        Vector3 direction = -data.MainLight.light.transform.forward.normalized;
+                        context.cmd.SetGlobalVector(WorldSpaceCameraPosition, data.CameraPosition);
+                        context.cmd.SetGlobalVector(LightDirection, new Vector4(direction.x, direction.y, direction.z, 0f));
+                        context.cmd.SetGlobalVector(LightPosition, new Vector4(-direction.x, -direction.y, -direction.z, 0f));
+                        context.cmd.SetKeyword(LoogaShadowShaderIds.CastingPunctualLightShadow, false);
+                        context.cmd.SetViewport(new Rect(0f, 0f, resolution, resolution));
+                        context.cmd.SetGlobalDepthBias(1f, 2.5f);
+                        float casterDepthBias = -data.ClipmapRadii[level].y * 0.25f;
+                        float casterNormalBias = -data.ClipmapRadii[level].y * 0.125f;
+                        context.cmd.SetGlobalVector(
+                            ShadowBias,
+                            new Vector4(
+                                casterDepthBias,
+                                casterNormalBias,
+                                (float)LightType.Directional,
+                                0f));
+                        context.cmd.SetViewProjectionMatrices(
+                            data.ViewMatrices[level],
+                            data.ProjectionMatrices[level]);
+                        context.cmd.DrawRendererList(data.RendererList);
+                        context.cmd.SetGlobalDepthBias(0f, 0f);
+                        context.cmd.SetViewProjectionMatrices(
+                            data.CameraView,
+                            data.CameraProjection);
+                        context.cmd.SetGlobalMatrixArray(
+                            LoogaShadowShaderIds.WorldToShadow,
+                            data.WorldToShadow);
+                        context.cmd.SetGlobalVectorArray(
+                            LoogaShadowShaderIds.ClipmapCenters,
+                            data.ClipmapCenters);
+                        context.cmd.SetGlobalVectorArray(
+                            LoogaShadowShaderIds.ClipmapRadii,
+                            data.ClipmapRadii);
+                        context.cmd.SetGlobalInteger(
+                            LoogaShadowShaderIds.ClipmapCount,
+                            data.Settings.ClipmapCount);
+                    });
+                    builder.Dispose();
+
+                    if (!useRawShadowDepth)
+                    {
+                        _copyDepthPass.Render(
+                            renderGraph,
+                            frameData,
+                            depthClipmap,
+                            clipmap,
+                            passName: $"Looga Shadows Copy Raw Depth {level}");
+                    }
+                }
+
+                for (int level = _settings.ClipmapCount; level < MaximumClipmapCount; level++)
+                {
+                    shadowFrameData.Clipmaps[level] = shadowFrameData.Clipmaps[0];
+                    shadowFrameData.DepthClipmaps[level] = shadowFrameData.DepthClipmaps[0];
+                }
+            }
+
+            private static bool SupportsRawShadowDepthSampling()
+            {
+                return SystemInfo.supportsRawShadowDepthSampling;
             }
 
             private RendererListHandle CreateShadowRendererList(
@@ -668,18 +857,26 @@ namespace LoogaSoft.Shadows
         {
             private const int ResolveShaderPass = 0;
             private const int DenoiseShaderPass = 8;
+            private const int RefilterShaderPass = 9;
             private readonly ProfilingSampler _profilingSampler = new("Looga Shadows Resolve Virtual Clipmaps");
             private Material _material;
             private LoogaShadowResolvedSettings _settings;
             private Matrix4x4[] _worldToShadow;
             private Vector4[] _clipmapCenters;
             private Vector4[] _clipmapRadii;
+            private Vector4[] _clipmapRects;
             private Vector3 _lightDirection;
 
             private sealed class PassData
             {
-                public TextureHandle Atlas;
-                public TextureHandle DepthAtlas;
+                public TextureHandle Clipmap0;
+                public TextureHandle Clipmap1;
+                public TextureHandle Clipmap2;
+                public TextureHandle Clipmap3;
+                public TextureHandle DepthClipmap0;
+                public TextureHandle DepthClipmap1;
+                public TextureHandle DepthClipmap2;
+                public TextureHandle DepthClipmap3;
                 public TextureHandle RawTarget;
                 public TextureHandle DenoiseTarget;
                 public TextureHandle Target;
@@ -690,6 +887,7 @@ namespace LoogaSoft.Shadows
                 public Matrix4x4[] WorldToShadow;
                 public Vector4[] ClipmapCenters;
                 public Vector4[] ClipmapRadii;
+                public Vector4[] ClipmapRects;
                 public Vector3 LightDirection;
             }
 
@@ -699,6 +897,7 @@ namespace LoogaSoft.Shadows
                 Matrix4x4[] worldToShadow,
                 Vector4[] clipmapCenters,
                 Vector4[] clipmapRadii,
+                Vector4[] clipmapRects,
                 Vector3 lightDirection)
             {
                 _material = material;
@@ -706,7 +905,9 @@ namespace LoogaSoft.Shadows
                 _worldToShadow = worldToShadow;
                 _clipmapCenters = clipmapCenters;
                 _clipmapRadii = clipmapRadii;
+                _clipmapRects = clipmapRects;
                 _lightDirection = lightDirection;
+                _material.DisableKeyword("_LOOGA_SEPARATE_CLIPMAPS");
                 ConfigureInput(ScriptableRenderPassInput.Depth | ScriptableRenderPassInput.Normal);
             }
 
@@ -720,13 +921,23 @@ namespace LoogaSoft.Shadows
                 if (!frameData.Contains<LoogaShadowFrameData>())
                     return;
 
-                TextureHandle atlas = frameData.Get<LoogaShadowFrameData>().Atlas;
-                TextureHandle depthAtlas = frameData.Get<LoogaShadowFrameData>().DepthAtlas;
+                LoogaShadowFrameData shadowFrameData = frameData.Get<LoogaShadowFrameData>();
+                TextureHandle clipmap0 = shadowFrameData.Clipmaps[0];
+                TextureHandle clipmap1 = shadowFrameData.Clipmaps[1];
+                TextureHandle clipmap2 = shadowFrameData.Clipmaps[2];
+                TextureHandle clipmap3 = shadowFrameData.Clipmaps[3];
+                TextureHandle depthClipmap0 = shadowFrameData.DepthClipmaps[0];
+                TextureHandle depthClipmap1 = shadowFrameData.DepthClipmaps[1];
+                TextureHandle depthClipmap2 = shadowFrameData.DepthClipmaps[2];
+                TextureHandle depthClipmap3 = shadowFrameData.DepthClipmaps[3];
                 TextureHandle cameraDepth = resourceData.cameraDepthTexture.IsValid()
                     ? resourceData.cameraDepthTexture
                     : resourceData.activeDepthTexture;
                 TextureHandle cameraNormals = resourceData.cameraNormalsTexture;
-                if (!atlas.IsValid() || !depthAtlas.IsValid() ||
+                if (!clipmap0.IsValid() || !clipmap1.IsValid() ||
+                    !clipmap2.IsValid() || !clipmap3.IsValid() ||
+                    !depthClipmap0.IsValid() || !depthClipmap1.IsValid() ||
+                    !depthClipmap2.IsValid() || !depthClipmap3.IsValid() ||
                     !cameraDepth.IsValid() || !cameraNormals.IsValid())
                     return;
 
@@ -750,7 +961,7 @@ namespace LoogaSoft.Shadows
                     name = "Looga Main Light Shadow Horizontal Reconstruction",
                     clearBuffer = true,
                     clearColor = Color.white,
-                    filterMode = FilterMode.Bilinear,
+                    filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp
                 });
                 TextureHandle target = renderGraph.CreateTexture(new TextureDesc(descriptor)
@@ -762,7 +973,6 @@ namespace LoogaSoft.Shadows
                     wrapMode = TextureWrapMode.Clamp
                 });
 
-                LoogaShadowFrameData shadowFrameData = frameData.Get<LoogaShadowFrameData>();
                 shadowFrameData.RawVisibility = rawTarget;
                 shadowFrameData.ResolvedVisibility = target;
 
@@ -771,8 +981,14 @@ namespace LoogaSoft.Shadows
                     out PassData passData,
                     _profilingSampler);
 
-                passData.Atlas = atlas;
-                passData.DepthAtlas = depthAtlas;
+                passData.Clipmap0 = clipmap0;
+                passData.Clipmap1 = clipmap1;
+                passData.Clipmap2 = clipmap2;
+                passData.Clipmap3 = clipmap3;
+                passData.DepthClipmap0 = depthClipmap0;
+                passData.DepthClipmap1 = depthClipmap1;
+                passData.DepthClipmap2 = depthClipmap2;
+                passData.DepthClipmap3 = depthClipmap3;
                 passData.RawTarget = rawTarget;
                 passData.DenoiseTarget = denoiseTarget;
                 passData.Target = target;
@@ -783,14 +999,21 @@ namespace LoogaSoft.Shadows
                 passData.WorldToShadow = _worldToShadow;
                 passData.ClipmapCenters = _clipmapCenters;
                 passData.ClipmapRadii = _clipmapRadii;
+                passData.ClipmapRects = _clipmapRects;
                 passData.LightDirection = _lightDirection;
 
                 builder.UseAllGlobalTextures(true);
-                builder.UseTexture(atlas, AccessFlags.Read);
-                builder.UseTexture(depthAtlas, AccessFlags.Read);
+                builder.UseTexture(clipmap0, AccessFlags.Read);
+                builder.UseTexture(clipmap1, AccessFlags.Read);
+                builder.UseTexture(clipmap2, AccessFlags.Read);
+                builder.UseTexture(clipmap3, AccessFlags.Read);
+                builder.UseTexture(depthClipmap0, AccessFlags.Read);
+                builder.UseTexture(depthClipmap1, AccessFlags.Read);
+                builder.UseTexture(depthClipmap2, AccessFlags.Read);
+                builder.UseTexture(depthClipmap3, AccessFlags.Read);
                 builder.UseTexture(rawTarget, AccessFlags.ReadWrite);
                 builder.UseTexture(denoiseTarget, AccessFlags.ReadWrite);
-                builder.UseTexture(target, AccessFlags.WriteAll);
+                builder.UseTexture(target, AccessFlags.ReadWrite);
                 builder.UseTexture(cameraDepth, AccessFlags.Read);
                 builder.UseTexture(cameraNormals, AccessFlags.Read);
                 builder.AllowGlobalStateModification(true);
@@ -799,8 +1022,14 @@ namespace LoogaSoft.Shadows
                 builder.SetGlobalTextureAfterPass(target, LoogaShadowShaderIds.UrpScreenSpaceShadowTexture);
                 builder.SetRenderFunc(static (PassData data, UnsafeGraphContext context) =>
                 {
-                    RTHandle atlas = data.Atlas;
-                    RTHandle depthAtlas = data.DepthAtlas;
+                    RTHandle clipmap0 = data.Clipmap0;
+                    RTHandle clipmap1 = data.Clipmap1;
+                    RTHandle clipmap2 = data.Clipmap2;
+                    RTHandle clipmap3 = data.Clipmap3;
+                    RTHandle depthClipmap0 = data.DepthClipmap0;
+                    RTHandle depthClipmap1 = data.DepthClipmap1;
+                    RTHandle depthClipmap2 = data.DepthClipmap2;
+                    RTHandle depthClipmap3 = data.DepthClipmap3;
                     RTHandle rawTarget = data.RawTarget;
                     RTHandle denoiseTarget = data.DenoiseTarget;
                     RTHandle target = data.Target;
@@ -816,10 +1045,18 @@ namespace LoogaSoft.Shadows
                         rawTarget,
                         RenderBufferLoadAction.DontCare,
                         RenderBufferStoreAction.Store);
-                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowAtlas, atlas);
-                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthAtlas, depthAtlas);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowClipmaps[0], clipmap0);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowClipmaps[1], clipmap1);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowClipmaps[2], clipmap2);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowClipmaps[3], clipmap3);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthClipmaps[0], depthClipmap0);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthClipmaps[1], depthClipmap1);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthClipmaps[2], depthClipmap2);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthClipmaps[3], depthClipmap3);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowAtlas, clipmap0);
+                    context.cmd.SetGlobalTexture(LoogaShadowShaderIds.VirtualShadowDepthAtlas, depthClipmap0);
                     ApplySettings(context.cmd, data);
-                    Blitter.BlitTexture(context.cmd, depthAtlas, Vector2.one, data.Material, ResolveShaderPass);
+                    Blitter.BlitTexture(context.cmd, depthClipmap0, Vector2.one, data.Material, ResolveShaderPass);
                     context.cmd.SetRenderTarget(
                         denoiseTarget,
                         RenderBufferLoadAction.DontCare,
@@ -836,6 +1073,58 @@ namespace LoogaSoft.Shadows
                         LoogaShadowShaderIds.DenoiseDirection,
                         new Vector4(0f, 1f, 0f, 0f));
                     Blitter.BlitTexture(context.cmd, denoiseTarget, Vector2.one, data.Material, DenoiseShaderPass);
+                    context.cmd.SetRenderTarget(
+                        denoiseTarget,
+                        RenderBufferLoadAction.DontCare,
+                        RenderBufferStoreAction.Store);
+                    context.cmd.SetGlobalVector(
+                        LoogaShadowShaderIds.DenoiseDirection,
+                        new Vector4(2f, 0f, 0f, 0f));
+                    Blitter.BlitTexture(context.cmd, target, Vector2.one, data.Material, DenoiseShaderPass);
+                    context.cmd.SetRenderTarget(
+                        target,
+                        RenderBufferLoadAction.DontCare,
+                        RenderBufferStoreAction.Store);
+                    context.cmd.SetGlobalVector(
+                        LoogaShadowShaderIds.DenoiseDirection,
+                        new Vector4(0f, 2f, 0f, 0f));
+                    Blitter.BlitTexture(context.cmd, denoiseTarget, Vector2.one, data.Material, DenoiseShaderPass);
+                    context.cmd.SetRenderTarget(
+                        rawTarget,
+                        RenderBufferLoadAction.DontCare,
+                        RenderBufferStoreAction.Store);
+                    Blitter.BlitTexture(
+                        context.cmd,
+                        target,
+                        Vector2.one,
+                        data.Material,
+                        RefilterShaderPass);
+                    context.cmd.SetRenderTarget(
+                        denoiseTarget,
+                        RenderBufferLoadAction.DontCare,
+                        RenderBufferStoreAction.Store);
+                    context.cmd.SetGlobalVector(
+                        LoogaShadowShaderIds.DenoiseDirection,
+                        new Vector4(1f, 0f, 0f, 0f));
+                    Blitter.BlitTexture(
+                        context.cmd,
+                        rawTarget,
+                        Vector2.one,
+                        data.Material,
+                        DenoiseShaderPass);
+                    context.cmd.SetRenderTarget(
+                        target,
+                        RenderBufferLoadAction.DontCare,
+                        RenderBufferStoreAction.Store);
+                    context.cmd.SetGlobalVector(
+                        LoogaShadowShaderIds.DenoiseDirection,
+                        new Vector4(0f, 1f, 0f, 0f));
+                    Blitter.BlitTexture(
+                        context.cmd,
+                        denoiseTarget,
+                        Vector2.one,
+                        data.Material,
+                        DenoiseShaderPass);
                     context.cmd.SetGlobalInteger(LoogaShadowShaderIds.ShadowsEnabled, 1);
                     context.cmd.SetKeyword(LoogaShadowShaderIds.MainLightShadows, false);
                     context.cmd.SetKeyword(LoogaShadowShaderIds.MainLightShadowCascades, false);
@@ -849,6 +1138,7 @@ namespace LoogaSoft.Shadows
                 command.SetGlobalMatrixArray(LoogaShadowShaderIds.WorldToShadow, data.WorldToShadow);
                 command.SetGlobalVectorArray(LoogaShadowShaderIds.ClipmapCenters, data.ClipmapCenters);
                 command.SetGlobalVectorArray(LoogaShadowShaderIds.ClipmapRadii, data.ClipmapRadii);
+                command.SetGlobalVectorArray(LoogaShadowShaderIds.ClipmapRects, data.ClipmapRects);
                 command.SetGlobalInteger(LoogaShadowShaderIds.ClipmapCount, settings.ClipmapCount);
                 command.SetGlobalVector(
                     LoogaShadowShaderIds.AtlasSize,
@@ -922,13 +1212,20 @@ namespace LoogaSoft.Shadows
             private Matrix4x4[] _worldToShadow;
             private Vector4[] _clipmapCenters;
             private Vector4[] _clipmapRadii;
+            private Vector4[] _clipmapRects;
             private Vector3 _lightDirection;
             private LoogaShadowDebugView _debugView;
 
             private sealed class PassData
             {
-                public TextureHandle Atlas;
-                public TextureHandle DepthAtlas;
+                public TextureHandle Clipmap0;
+                public TextureHandle Clipmap1;
+                public TextureHandle Clipmap2;
+                public TextureHandle Clipmap3;
+                public TextureHandle DepthClipmap0;
+                public TextureHandle DepthClipmap1;
+                public TextureHandle DepthClipmap2;
+                public TextureHandle DepthClipmap3;
                 public TextureHandle RawVisibility;
                 public TextureHandle ResolvedVisibility;
                 public TextureHandle CameraDepth;
@@ -940,6 +1237,7 @@ namespace LoogaSoft.Shadows
                 public Matrix4x4[] WorldToShadow;
                 public Vector4[] ClipmapCenters;
                 public Vector4[] ClipmapRadii;
+                public Vector4[] ClipmapRects;
                 public Vector3 LightDirection;
             }
 
@@ -949,6 +1247,7 @@ namespace LoogaSoft.Shadows
                 Matrix4x4[] worldToShadow,
                 Vector4[] clipmapCenters,
                 Vector4[] clipmapRadii,
+                Vector4[] clipmapRects,
                 Vector3 lightDirection)
             {
                 _material = material;
@@ -956,6 +1255,7 @@ namespace LoogaSoft.Shadows
                 _worldToShadow = worldToShadow;
                 _clipmapCenters = clipmapCenters;
                 _clipmapRadii = clipmapRadii;
+                _clipmapRects = clipmapRects;
                 _lightDirection = lightDirection;
                 _debugView = settings.DebugView;
                 ConfigureInput(ScriptableRenderPassInput.Depth | ScriptableRenderPassInput.Normal);
@@ -970,11 +1270,20 @@ namespace LoogaSoft.Shadows
                     return;
 
                 LoogaShadowFrameData shadowFrameData = frameData.Get<LoogaShadowFrameData>();
-                TextureHandle atlas = shadowFrameData.Atlas;
-                TextureHandle depthAtlas = shadowFrameData.DepthAtlas;
+                TextureHandle clipmap0 = shadowFrameData.Clipmaps[0];
+                TextureHandle clipmap1 = shadowFrameData.Clipmaps[1];
+                TextureHandle clipmap2 = shadowFrameData.Clipmaps[2];
+                TextureHandle clipmap3 = shadowFrameData.Clipmaps[3];
+                TextureHandle depthClipmap0 = shadowFrameData.DepthClipmaps[0];
+                TextureHandle depthClipmap1 = shadowFrameData.DepthClipmaps[1];
+                TextureHandle depthClipmap2 = shadowFrameData.DepthClipmaps[2];
+                TextureHandle depthClipmap3 = shadowFrameData.DepthClipmaps[3];
                 TextureHandle rawVisibility = shadowFrameData.RawVisibility;
                 TextureHandle resolvedVisibility = shadowFrameData.ResolvedVisibility;
-                if (!atlas.IsValid() || !depthAtlas.IsValid() ||
+                if (!clipmap0.IsValid() || !clipmap1.IsValid() ||
+                    !clipmap2.IsValid() || !clipmap3.IsValid() ||
+                    !depthClipmap0.IsValid() || !depthClipmap1.IsValid() ||
+                    !depthClipmap2.IsValid() || !depthClipmap3.IsValid() ||
                     !rawVisibility.IsValid() || !resolvedVisibility.IsValid())
                     return;
 
@@ -991,8 +1300,14 @@ namespace LoogaSoft.Shadows
                     out PassData passData,
                     _profilingSampler);
 
-                passData.Atlas = atlas;
-                passData.DepthAtlas = depthAtlas;
+                passData.Clipmap0 = clipmap0;
+                passData.Clipmap1 = clipmap1;
+                passData.Clipmap2 = clipmap2;
+                passData.Clipmap3 = clipmap3;
+                passData.DepthClipmap0 = depthClipmap0;
+                passData.DepthClipmap1 = depthClipmap1;
+                passData.DepthClipmap2 = depthClipmap2;
+                passData.DepthClipmap3 = depthClipmap3;
                 passData.RawVisibility = rawVisibility;
                 passData.ResolvedVisibility = resolvedVisibility;
                 passData.CameraDepth = cameraDepth;
@@ -1010,10 +1325,17 @@ namespace LoogaSoft.Shadows
                 passData.WorldToShadow = _worldToShadow;
                 passData.ClipmapCenters = _clipmapCenters;
                 passData.ClipmapRadii = _clipmapRadii;
+                passData.ClipmapRects = _clipmapRects;
                 passData.LightDirection = _lightDirection;
                 builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
-                builder.UseTexture(atlas, AccessFlags.Read);
-                builder.UseTexture(depthAtlas, AccessFlags.Read);
+                builder.UseTexture(clipmap0, AccessFlags.Read);
+                builder.UseTexture(clipmap1, AccessFlags.Read);
+                builder.UseTexture(clipmap2, AccessFlags.Read);
+                builder.UseTexture(clipmap3, AccessFlags.Read);
+                builder.UseTexture(depthClipmap0, AccessFlags.Read);
+                builder.UseTexture(depthClipmap1, AccessFlags.Read);
+                builder.UseTexture(depthClipmap2, AccessFlags.Read);
+                builder.UseTexture(depthClipmap3, AccessFlags.Read);
                 builder.UseTexture(rawVisibility, AccessFlags.Read);
                 builder.UseTexture(resolvedVisibility, AccessFlags.Read);
                 builder.UseTexture(cameraDepth, AccessFlags.Read);
@@ -1025,6 +1347,36 @@ namespace LoogaSoft.Shadows
                 {
                     RTHandle debugSource = data.DebugSource;
                     LoogaShadowResolvedSettings settings = data.Settings;
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowClipmap0",
+                        data.Clipmap0);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowClipmap1",
+                        data.Clipmap1);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowClipmap2",
+                        data.Clipmap2);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowClipmap3",
+                        data.Clipmap3);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowDepthClipmap0",
+                        data.DepthClipmap0);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowDepthClipmap1",
+                        data.DepthClipmap1);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowDepthClipmap2",
+                        data.DepthClipmap2);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowDepthClipmap3",
+                        data.DepthClipmap3);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowAtlas",
+                        data.Clipmap0);
+                    context.cmd.SetGlobalTexture(
+                        "_LoogaVirtualShadowDepthAtlas",
+                        data.DepthClipmap0);
                     context.cmd.SetGlobalMatrixArray(
                         LoogaShadowShaderIds.WorldToShadow,
                         data.WorldToShadow);
@@ -1034,6 +1386,9 @@ namespace LoogaSoft.Shadows
                     context.cmd.SetGlobalVectorArray(
                         LoogaShadowShaderIds.ClipmapRadii,
                         data.ClipmapRadii);
+                    context.cmd.SetGlobalVectorArray(
+                        LoogaShadowShaderIds.ClipmapRects,
+                        data.ClipmapRects);
                     context.cmd.SetGlobalInteger(
                         LoogaShadowShaderIds.ClipmapCount,
                         settings.ClipmapCount);
