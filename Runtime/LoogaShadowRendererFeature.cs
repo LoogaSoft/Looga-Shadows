@@ -67,6 +67,7 @@ namespace LoogaSoft.Shadows
             public readonly TextureHandle[] DepthClipmaps = new TextureHandle[MaximumClipmapCount];
             public TextureHandle RawVisibility = TextureHandle.nullHandle;
             public TextureHandle ResolvedVisibility = TextureHandle.nullHandle;
+            public bool HasShadowCasters;
 
             public override void Reset()
             {
@@ -77,6 +78,7 @@ namespace LoogaSoft.Shadows
                 }
                 RawVisibility = TextureHandle.nullHandle;
                 ResolvedVisibility = TextureHandle.nullHandle;
+                HasShadowCasters = false;
             }
         }
 
@@ -526,6 +528,12 @@ namespace LoogaSoft.Shadows
                     cullContextData,
                     renderingData.cullResults);
                 LoogaShadowFrameData shadowFrameData = frameData.GetOrCreate<LoogaShadowFrameData>();
+                shadowFrameData.HasShadowCasters =
+                    shadowCullResults.GetShadowCasterBounds(
+                        _mainLightIndex,
+                        out _);
+                if (!shadowFrameData.HasShadowCasters)
+                    return;
 
                 RecordPackedAtlas(
                     renderGraph,
@@ -891,6 +899,10 @@ namespace LoogaSoft.Shadows
                 public Vector3 LightDirection;
             }
 
+            private sealed class FullyLitPassData
+            {
+            }
+
             public void Setup(
                 Material material,
                 LoogaShadowResolvedSettings settings,
@@ -922,6 +934,15 @@ namespace LoogaSoft.Shadows
                     return;
 
                 LoogaShadowFrameData shadowFrameData = frameData.Get<LoogaShadowFrameData>();
+                if (!shadowFrameData.HasShadowCasters)
+                {
+                    RecordFullyLitShadow(
+                        renderGraph,
+                        cameraData,
+                        shadowFrameData);
+                    return;
+                }
+
                 TextureHandle clipmap0 = shadowFrameData.Clipmaps[0];
                 TextureHandle clipmap1 = shadowFrameData.Clipmaps[1];
                 TextureHandle clipmap2 = shadowFrameData.Clipmaps[2];
@@ -1129,6 +1150,64 @@ namespace LoogaSoft.Shadows
                     context.cmd.SetKeyword(LoogaShadowShaderIds.MainLightShadows, false);
                     context.cmd.SetKeyword(LoogaShadowShaderIds.MainLightShadowCascades, false);
                     context.cmd.SetKeyword(LoogaShadowShaderIds.MainLightShadowScreen, true);
+                });
+            }
+
+            private static void RecordFullyLitShadow(
+                RenderGraph renderGraph,
+                UniversalCameraData cameraData,
+                LoogaShadowFrameData shadowFrameData)
+            {
+                RenderTextureDescriptor descriptor =
+                    cameraData.cameraTargetDescriptor;
+                descriptor.depthStencilFormat = GraphicsFormat.None;
+                descriptor.depthBufferBits = 0;
+                descriptor.msaaSamples = 1;
+                descriptor.graphicsFormat = GraphicsFormat.R16G16_SFloat;
+                descriptor.useMipMap = false;
+                descriptor.autoGenerateMips = false;
+                TextureHandle target = renderGraph.CreateTexture(
+                    new TextureDesc(descriptor)
+                    {
+                        name = "Looga Main Light Shadow Fully Lit",
+                        clearBuffer = true,
+                        clearColor = new Color(1f, 0f, 0f, 1f),
+                        filterMode = FilterMode.Point,
+                        wrapMode = TextureWrapMode.Clamp
+                    });
+
+                shadowFrameData.RawVisibility = target;
+                shadowFrameData.ResolvedVisibility = target;
+
+                using IRasterRenderGraphBuilder builder =
+                    renderGraph.AddRasterRenderPass(
+                        "Looga Shadows No Visible Casters",
+                        out FullyLitPassData _);
+                builder.SetRenderAttachment(target, 0, AccessFlags.Write);
+                builder.AllowGlobalStateModification(true);
+                builder.AllowPassCulling(false);
+                builder.SetGlobalTextureAfterPass(
+                    target,
+                    LoogaShadowShaderIds.MainLightShadowTexture);
+                builder.SetGlobalTextureAfterPass(
+                    target,
+                    LoogaShadowShaderIds.UrpScreenSpaceShadowTexture);
+                builder.SetRenderFunc(static (
+                    FullyLitPassData _,
+                    RasterGraphContext context) =>
+                {
+                    context.cmd.SetGlobalInteger(
+                        LoogaShadowShaderIds.ShadowsEnabled,
+                        1);
+                    context.cmd.SetKeyword(
+                        LoogaShadowShaderIds.MainLightShadows,
+                        false);
+                    context.cmd.SetKeyword(
+                        LoogaShadowShaderIds.MainLightShadowCascades,
+                        false);
+                    context.cmd.SetKeyword(
+                        LoogaShadowShaderIds.MainLightShadowScreen,
+                        true);
                 });
             }
 
