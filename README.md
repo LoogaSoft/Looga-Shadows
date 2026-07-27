@@ -12,6 +12,7 @@ visibility through URP's screen-space main-light contract.
 - smooth clipmap overlap and distance fading;
 - quality presets controlling atlas resolution, clipmap count, blocker samples, and filter samples;
 - optional per-light profile and physical source-angle overrides;
+- selectable G-buffer, reconstructed-depth, or depth-normals-pass receiver normals;
 - standard URP and Looga custom-shader integration;
 - clipmap, texel, depth, normal, penumbra, and visibility debug views;
 - validation scene generator and runtime debugger.
@@ -28,11 +29,10 @@ Material shaders can sample the final screen-space visibility through
 The renderer feature owns the baseline settings directly. Assigning a profile to the active
 directional light's **Looga Shadow Light** component overrides that baseline for the light.
 
-Looga Shadows does not sample URP's main-light shadow atlas or fall back to it for transparent
-rendering.
-
-Standard URP transparent shaders are currently rendered without main-light shadow reception. A
-future world-space Looga transparent integration will sample the owned clipmaps directly.
+Looga Shadows does not sample or fall back to URP's main-light shadow atlas. Before transparent
+rendering, it binds its package-owned clipmap atlas through URP's world-space cascade receiver
+contract. Standard URP and Shader Graph transparent shaders therefore receive shadows at their
+own fragment positions without sampling the opaque screen-space receiver behind them.
 
 ## Debug Views
 
@@ -44,7 +44,7 @@ Debug views are translucent Scene/Game overlays rather than replacement renders:
 - **Clipmap Levels** tints receivers by their selected clipmap.
 - **Virtual Texels** tints shadow-map footprint and adaptive grid density.
 - **Linear Depth** applies logarithmic eye-depth shading.
-- **World Normals** overlays depth-reconstructed geometric normals.
+- **World Normals** overlays the currently selected receiver-normal source.
 
 Visibility and penumbra overlays remain unchanged where the selected signal is absent.
 A uniform clipmap tint means that the current view is correctly contained by one clipmap level.

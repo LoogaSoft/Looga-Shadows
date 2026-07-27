@@ -29,6 +29,8 @@ namespace LoogaSoft.Shadows.Editor
                 DrawProperty(serializedObject, rootPath, "_depthBias", "Depth Bias");
                 DrawProperty(serializedObject, rootPath, "_normalBias", "Normal Bias");
                 DrawProperty(serializedObject, rootPath, "_clipmapBlend", "Clipmap Blend");
+                EditorGUILayout.Space(3);
+                DrawProperty(serializedObject, rootPath, "_normalsSource", "Normals Source");
             });
 
             DrawSection("Debugging", preferencePrefix + ".Debugging", false, () =>

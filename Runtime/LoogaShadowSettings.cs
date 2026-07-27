@@ -6,7 +6,7 @@ namespace LoogaSoft.Shadows
     [Serializable]
     public struct LoogaShadowSettings
     {
-        internal const int CurrentVersion = 1;
+        internal const int CurrentVersion = 2;
 
         [SerializeField, HideInInspector]
         private int _version;
@@ -56,6 +56,10 @@ namespace LoogaSoft.Shadows
         private float _clipmapBlend;
 
         [SerializeField]
+        [Tooltip("Selects the surface-normal source used by shadow reconstruction. G-Buffers is preferred for deferred rendering, Reconstruct From Depth avoids material normal maps, and Depth + Normals Pass requests URP's normals prepass.")]
+        private LoogaShadowNormalsSource _normalsSource;
+
+        [SerializeField]
         [Tooltip("Replaces the opaque camera result with a selected clipmap diagnostic.")]
         private LoogaShadowDebugView _debugView;
 
@@ -70,6 +74,7 @@ namespace LoogaSoft.Shadows
         public float DepthBias => _depthBias;
         public float NormalBias => _normalBias;
         public float ClipmapBlend => _clipmapBlend;
+        public LoogaShadowNormalsSource NormalsSource => _normalsSource;
         public LoogaShadowDebugView DebugView => _debugView;
         internal bool IsInitialized => _version >= CurrentVersion;
 
@@ -85,6 +90,7 @@ namespace LoogaSoft.Shadows
             0.0012f,
             0.002f,
             0.12f,
+            LoogaShadowNormalsSource.GBuffer,
             LoogaShadowDebugView.Off);
 
         internal static LoogaShadowSettings Create(
@@ -99,6 +105,7 @@ namespace LoogaSoft.Shadows
             float depthBias,
             float normalBias,
             float clipmapBlend,
+            LoogaShadowNormalsSource normalsSource,
             LoogaShadowDebugView debugView)
         {
             LoogaShadowSettings settings = new()
@@ -115,6 +122,7 @@ namespace LoogaSoft.Shadows
                 _depthBias = depthBias,
                 _normalBias = normalBias,
                 _clipmapBlend = clipmapBlend,
+                _normalsSource = normalsSource,
                 _debugView = debugView
             };
             settings.Validate();
@@ -123,8 +131,18 @@ namespace LoogaSoft.Shadows
 
         internal void EnsureInitialized()
         {
-            if (!IsInitialized)
+            if (_version <= 0)
+            {
                 this = Default;
+                return;
+            }
+
+            if (_version < 2)
+            {
+                _normalsSource = LoogaShadowNormalsSource.GBuffer;
+                _version = 2;
+                Validate();
+            }
         }
 
         internal void Validate()
@@ -139,6 +157,8 @@ namespace LoogaSoft.Shadows
             _depthBias = Mathf.Clamp(_depthBias, 0f, 0.02f);
             _normalBias = Mathf.Clamp(_normalBias, 0f, 0.1f);
             _clipmapBlend = Mathf.Clamp(_clipmapBlend, 0f, 0.25f);
+            if (!Enum.IsDefined(typeof(LoogaShadowNormalsSource), _normalsSource))
+                _normalsSource = LoogaShadowNormalsSource.GBuffer;
             if (!Enum.IsDefined(typeof(LoogaShadowDebugView), _debugView))
                 _debugView = LoogaShadowDebugView.Off;
         }

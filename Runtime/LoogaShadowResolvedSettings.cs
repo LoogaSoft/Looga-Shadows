@@ -15,6 +15,7 @@ namespace LoogaSoft.Shadows
         public readonly float DepthBias;
         public readonly float NormalBias;
         public readonly float ClipmapBlend;
+        public readonly LoogaShadowNormalsSource NormalsSource;
         public readonly LoogaShadowDebugView DebugView;
         public readonly int AtlasResolution;
         public readonly int ClipmapCount;
@@ -38,6 +39,7 @@ namespace LoogaSoft.Shadows
             DepthBias = settings.DepthBias;
             NormalBias = settings.NormalBias;
             ClipmapBlend = settings.ClipmapBlend;
+            NormalsSource = settings.NormalsSource;
             DebugView = settings.DebugView;
             SettingsSource = settingsSource;
 

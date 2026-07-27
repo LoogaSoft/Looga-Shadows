@@ -10,6 +10,18 @@ namespace LoogaSoft.Shadows
         Ultra = 3
     }
 
+    public enum LoogaShadowNormalsSource
+    {
+        [InspectorName("G-Buffers")]
+        GBuffer = 0,
+
+        [InspectorName("Reconstruct From Depth")]
+        ReconstructFromDepth = 1,
+
+        [InspectorName("Depth + Normals Pass")]
+        DepthNormalsPass = 2
+    }
+
     public enum LoogaShadowDebugView
     {
         Off = 0,
@@ -65,6 +77,7 @@ namespace LoogaSoft.Shadows
         public float DepthBias => Settings.DepthBias;
         public float NormalBias => Settings.NormalBias;
         public float ClipmapBlend => Settings.ClipmapBlend;
+        public LoogaShadowNormalsSource NormalsSource => Settings.NormalsSource;
         public LoogaShadowDebugView DebugView => Settings.DebugView;
 
         private void OnEnable()
@@ -83,19 +96,28 @@ namespace LoogaSoft.Shadows
             if (_serializedVersion >= LoogaShadowSettings.CurrentVersion && _settings.IsInitialized)
                 return;
 
-            _settings = LoogaShadowSettings.Create(
-                _quality,
-                _renderSceneView,
-                _nearClipmapRadius,
-                _shadowDistance,
-                _depthRange,
-                _sourceAngularDiameter,
-                _softness,
-                _maximumPenumbra,
-                _depthBias,
-                _normalBias,
-                _clipmapBlend,
-                _debugView);
+            if (_serializedVersion <= 0)
+            {
+                _settings = LoogaShadowSettings.Create(
+                    _quality,
+                    _renderSceneView,
+                    _nearClipmapRadius,
+                    _shadowDistance,
+                    _depthRange,
+                    _sourceAngularDiameter,
+                    _softness,
+                    _maximumPenumbra,
+                    _depthBias,
+                    _normalBias,
+                    _clipmapBlend,
+                    LoogaShadowNormalsSource.GBuffer,
+                    _debugView);
+            }
+            else
+            {
+                _settings.EnsureInitialized();
+            }
+
             _serializedVersion = LoogaShadowSettings.CurrentVersion;
         }
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- Added selectable G-buffer, reconstructed-depth, and depth-normals-pass sources for receiver surface normals.
+- Decoupled PCSS receiver-plane depth gradients from material shading normals by deriving the local depth plane from projected shadow-coordinate derivatives.
+- Removed camera-relative clipmap outlines by evaluating receiver derivatives before dynamic level selection and separating the blocker handoff from penumbra-driven filter-level selection.
+- Added receiver-correct shadows for standard URP and Shader Graph transparents by binding Looga's clipmap atlas through URP's world-space transparent shadow path.
+- Added migration that preserves existing renderer and profile tuning while defaulting upgraded assets to G-buffer normals.
+
 ## [0.3.0] - 2026-07-22
 
 - Removed the screen-space contact-shadow pass, settings, debug mode, and validation fixtures.

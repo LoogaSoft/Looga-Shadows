@@ -42,6 +42,17 @@ namespace LoogaSoft.Shadows
         public static readonly int DenoiseDirection = Shader.PropertyToID("_LoogaDenoiseDirection");
         public static readonly int BlueNoiseTexture = Shader.PropertyToID("_LoogaBlueNoiseTexture");
         public static readonly int BlueNoiseAvailable = Shader.PropertyToID("_LoogaBlueNoiseAvailable");
+        public static readonly int NormalsSource = Shader.PropertyToID("_LoogaNormalsSource");
+        public static readonly int UrpMainLightWorldToShadow = Shader.PropertyToID("_MainLightWorldToShadow");
+        public static readonly int UrpCascadeShadowSplitSpheres0 = Shader.PropertyToID("_CascadeShadowSplitSpheres0");
+        public static readonly int UrpCascadeShadowSplitSpheres1 = Shader.PropertyToID("_CascadeShadowSplitSpheres1");
+        public static readonly int UrpCascadeShadowSplitSpheres2 = Shader.PropertyToID("_CascadeShadowSplitSpheres2");
+        public static readonly int UrpCascadeShadowSplitSpheres3 = Shader.PropertyToID("_CascadeShadowSplitSpheres3");
+        public static readonly int UrpCascadeShadowSplitSphereRadii = Shader.PropertyToID("_CascadeShadowSplitSphereRadii");
+        public static readonly int UrpMainLightShadowOffset0 = Shader.PropertyToID("_MainLightShadowOffset0");
+        public static readonly int UrpMainLightShadowOffset1 = Shader.PropertyToID("_MainLightShadowOffset1");
+        public static readonly int UrpMainLightShadowParams = Shader.PropertyToID("_MainLightShadowParams");
+        public static readonly int UrpMainLightShadowmapSize = Shader.PropertyToID("_MainLightShadowmapSize");
 
         public static readonly GlobalKeyword MainLightShadows = GlobalKeyword.Create("_MAIN_LIGHT_SHADOWS");
         public static readonly GlobalKeyword MainLightShadowCascades = GlobalKeyword.Create("_MAIN_LIGHT_SHADOWS_CASCADE");
