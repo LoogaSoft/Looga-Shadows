@@ -43,6 +43,7 @@ namespace LoogaSoft.Shadows
         public static readonly int BlueNoiseTexture = Shader.PropertyToID("_LoogaBlueNoiseTexture");
         public static readonly int BlueNoiseAvailable = Shader.PropertyToID("_LoogaBlueNoiseAvailable");
         public static readonly int NormalsSource = Shader.PropertyToID("_LoogaNormalsSource");
+        public static readonly int NormalsOctEncoded = Shader.PropertyToID("_LoogaNormalsOctEncoded");
         public static readonly int UrpMainLightWorldToShadow = Shader.PropertyToID("_MainLightWorldToShadow");
         public static readonly int UrpCascadeShadowSplitSpheres0 = Shader.PropertyToID("_CascadeShadowSplitSpheres0");
         public static readonly int UrpCascadeShadowSplitSpheres1 = Shader.PropertyToID("_CascadeShadowSplitSpheres1");

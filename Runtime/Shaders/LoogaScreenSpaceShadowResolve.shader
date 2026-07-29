@@ -30,6 +30,7 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
         float4 _LoogaDenoiseDirection;
         float _LoogaBlueNoiseAvailable;
         int _LoogaNormalsSource;
+        int _LoogaNormalsOctEncoded;
         int _LoogaClipmapCount;
 
         #define LOOGA_MAX_BLOCKER_SAMPLES 16
@@ -89,7 +90,20 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             if (_LoogaNormalsSource == 1)
                 return LoogaReconstructNormalFromDepth(positionWS);
 
-            return normalize(SampleSceneNormals(uv));
+            float2 normalUv = ClampAndScaleUVForBilinear(
+                UnityStereoTransformScreenSpaceTex(uv),
+                _CameraNormalsTexture_TexelSize.xy);
+            float3 normalWS = SAMPLE_TEXTURE2D_X(
+                _CameraNormalsTexture,
+                sampler_PointClamp,
+                normalUv).xyz;
+            if (_LoogaNormalsOctEncoded != 0)
+            {
+                float2 remappedOctNormalWS = Unpack888ToFloat2(normalWS);
+                float2 octNormalWS = remappedOctNormalWS * 2.0 - 1.0;
+                normalWS = UnpackNormalOctQuadEncode(octNormalWS);
+            }
+            return normalize(normalWS);
         }
 
         float2 LoogaTileOrigin(int level)
@@ -638,8 +652,7 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             lit.rawVisibility = 1.0;
             lit.clipmap = -1.0;
 
-            float3 biasedPosition =
-                positionWS + biasNormalWS * _LoogaShadowBiasData.y;
+            float3 biasedPosition = positionWS;
             int level = LoogaFindClipmap(biasedPosition);
             if (level < 0)
                 return lit;
@@ -744,8 +757,7 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             lit.rawVisibility = 1.0;
             lit.clipmap = -1.0;
 
-            float3 biasedPosition =
-                positionWS + biasNormalWS * _LoogaShadowBiasData.y;
+            float3 biasedPosition = positionWS;
             int level = LoogaFindClipmap(biasedPosition);
             if (level < 0)
                 return lit;
@@ -819,6 +831,13 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 positionWS,
                 positionDerivativeX,
                 positionDerivativeY);
+            // Build the receiver plane from the smooth shading normal. The
+            // original derivatives span the geometric triangle plane and reveal
+            // tessellation when PCSS applies them across a wide filter kernel.
+            positionDerivativeX -=
+                normalWS * dot(normalWS, positionDerivativeX);
+            positionDerivativeY -=
+                normalWS * dot(normalWS, positionDerivativeY);
             if (LoogaIsSky(deviceDepth))
             {
                 LoogaShadowEvaluation lit = (LoogaShadowEvaluation)0;
@@ -860,6 +879,11 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
                 positionWS,
                 positionDerivativeX,
                 positionDerivativeY);
+            float3 normalWS = LoogaResolveSurfaceNormal(uv, positionWS);
+            positionDerivativeX -=
+                normalWS * dot(normalWS, positionDerivativeX);
+            positionDerivativeY -=
+                normalWS * dot(normalWS, positionDerivativeY);
             float penumbraWorld = SAMPLE_TEXTURE2D_X(
                 _BlitTexture,
                 sampler_PointClamp,
@@ -1119,7 +1143,6 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment FragResolve
-            #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             ENDHLSL
         }
 
@@ -1197,7 +1220,6 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment FragDebugNormals
-            #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             ENDHLSL
         }
 
@@ -1209,7 +1231,6 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment FragDenoise
-            #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             ENDHLSL
         }
 
@@ -1221,7 +1242,6 @@ Shader "Hidden/LoogaSoft/Shadows/VirtualShadowResolve"
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment FragRefilter
-            #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             ENDHLSL
         }
 

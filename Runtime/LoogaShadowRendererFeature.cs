@@ -127,6 +127,8 @@ namespace LoogaSoft.Shadows
 
             BuildClipmaps(camera, mainLight, settings);
             bool usesDeferredLighting = GetUsesDeferredLighting(renderer);
+            bool usesAccurateGBufferNormals =
+                usesDeferredLighting && GetUsesAccurateGBufferNormals(renderer);
 
             _atlasPass.Setup(
                 mainLightIndex,
@@ -150,7 +152,8 @@ namespace LoogaSoft.Shadows
                 _clipmapRadii,
                 _clipmapRects,
                 -mainLight.transform.forward,
-                usesDeferredLighting);
+                usesDeferredLighting,
+                usesAccurateGBufferNormals);
             _transparentShadowReceiverPass.Setup(
                 settings,
                 _worldToShadow,
@@ -172,7 +175,8 @@ namespace LoogaSoft.Shadows
                     _clipmapRadii,
                     _clipmapRects,
                     -mainLight.transform.forward,
-                    usesDeferredLighting);
+                    usesDeferredLighting,
+                    usesAccurateGBufferNormals);
                 renderer.EnqueuePass(_debugOverlayPass);
             }
 
@@ -288,6 +292,21 @@ namespace LoogaSoft.Shadows
             return _cachedRendererUsesDeferredLighting;
         }
 
+        private static bool GetUsesAccurateGBufferNormals(ScriptableRenderer renderer)
+        {
+            if (renderer == null)
+                return false;
+
+            const System.Reflection.BindingFlags flags =
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic;
+            System.Reflection.PropertyInfo property =
+                renderer.GetType().GetProperty("accurateGbufferNormals", flags);
+            return property?.PropertyType == typeof(bool) &&
+                (bool)property.GetValue(renderer);
+        }
+
         private static LoogaShadowNormalsSource GetEffectiveNormalsSource(
             LoogaShadowNormalsSource requestedSource,
             bool usesDeferredLighting)
@@ -306,6 +325,18 @@ namespace LoogaSoft.Shadows
                 inputs |= ScriptableRenderPassInput.Normal;
 
             return inputs;
+        }
+
+        private static TextureHandle GetNormalsTexture(
+            UniversalResourceData resourceData,
+            LoogaShadowNormalsSource normalsSource)
+        {
+            return normalsSource switch
+            {
+                LoogaShadowNormalsSource.GBuffer => resourceData.gBuffer[2],
+                LoogaShadowNormalsSource.DepthNormalsPass => resourceData.cameraNormalsTexture,
+                _ => TextureHandle.nullHandle
+            };
         }
 
         private void BuildClipmaps(Camera camera, Light light, LoogaShadowResolvedSettings settings)
@@ -681,15 +712,12 @@ namespace LoogaSoft.Shadows
                             tileY * tileResolution,
                             tileResolution,
                             tileResolution));
-                        float casterDepthBias = -data.ClipmapRadii[level].y * 0.25f;
-                        float casterNormalBias = -data.ClipmapRadii[level].y * 0.125f;
                         context.cmd.SetGlobalVector(
                             ShadowBias,
-                            new Vector4(
-                                casterDepthBias,
-                                casterNormalBias,
-                                (float)LightType.Directional,
-                                0f));
+                            GetCasterShadowBias(
+                                data.MainLight,
+                                data.ClipmapRadii[level].y,
+                                data.Settings));
                         context.cmd.SetViewProjectionMatrices(
                             data.ViewMatrices[level],
                             data.ProjectionMatrices[level]);
@@ -800,15 +828,12 @@ namespace LoogaSoft.Shadows
                         context.cmd.SetKeyword(LoogaShadowShaderIds.CastingPunctualLightShadow, false);
                         context.cmd.SetViewport(new Rect(0f, 0f, resolution, resolution));
                         context.cmd.SetGlobalDepthBias(1f, 2.5f);
-                        float casterDepthBias = -data.ClipmapRadii[level].y * 0.25f;
-                        float casterNormalBias = -data.ClipmapRadii[level].y * 0.125f;
                         context.cmd.SetGlobalVector(
                             ShadowBias,
-                            new Vector4(
-                                casterDepthBias,
-                                casterNormalBias,
-                                (float)LightType.Directional,
-                                0f));
+                            GetCasterShadowBias(
+                                data.MainLight,
+                                data.ClipmapRadii[level].y,
+                                data.Settings));
                         context.cmd.SetViewProjectionMatrices(
                             data.ViewMatrices[level],
                             data.ProjectionMatrices[level]);
@@ -853,6 +878,43 @@ namespace LoogaSoft.Shadows
             private static bool SupportsRawShadowDepthSampling()
             {
                 return SystemInfo.supportsRawShadowDepthSampling;
+            }
+
+            private static Vector4 GetCasterShadowBias(
+                VisibleLight visibleLight,
+                float worldTexelSize,
+                LoogaShadowResolvedSettings settings)
+            {
+                Light light = visibleLight.light;
+                if (light == null)
+                    return new Vector4(0f, 0f, (float)LightType.Directional, 0f);
+
+                float kernelRadius = 1f;
+                if (light.shadows == LightShadows.Soft)
+                {
+                    SoftShadowQuality quality = SoftShadowQuality.Medium;
+                    if (light.TryGetComponent(out UniversalAdditionalLightData additionalLightData))
+                        quality = additionalLightData.softShadowQuality;
+
+                    kernelRadius = quality switch
+                    {
+                        SoftShadowQuality.Low => 1.5f,
+                        SoftShadowQuality.High => 3.5f,
+                        _ => 2.5f
+                    };
+                }
+
+                float depthBias = Mathf.Max(
+                    light.shadowBias * worldTexelSize * kernelRadius,
+                    settings.DepthBias * kernelRadius);
+                float normalBias = Mathf.Max(
+                    light.shadowNormalBias * worldTexelSize * kernelRadius,
+                    settings.NormalBias * kernelRadius);
+                return new Vector4(
+                    -depthBias,
+                    -normalBias,
+                    (float)LightType.Directional,
+                    0f);
             }
 
             private RendererListHandle CreateShadowRendererList(
@@ -908,6 +970,7 @@ namespace LoogaSoft.Shadows
             private Vector3 _lightDirection;
             private LoogaShadowNormalsSource _normalsSource;
             private bool _requiresCameraNormals;
+            private bool _normalsOctEncoded;
 
             private sealed class PassData
             {
@@ -933,6 +996,7 @@ namespace LoogaSoft.Shadows
                 public Vector3 LightDirection;
                 public LoogaShadowNormalsSource NormalsSource;
                 public bool RequiresCameraNormals;
+                public bool NormalsOctEncoded;
             }
 
             private sealed class FullyLitPassData
@@ -947,7 +1011,8 @@ namespace LoogaSoft.Shadows
                 Vector4[] clipmapRadii,
                 Vector4[] clipmapRects,
                 Vector3 lightDirection,
-                bool usesDeferredLighting)
+                bool usesDeferredLighting,
+                bool usesAccurateGBufferNormals)
             {
                 _material = material;
                 _settings = settings;
@@ -961,6 +1026,8 @@ namespace LoogaSoft.Shadows
                     usesDeferredLighting);
                 _requiresCameraNormals =
                     _normalsSource != LoogaShadowNormalsSource.ReconstructFromDepth;
+                _normalsOctEncoded =
+                    _requiresCameraNormals && usesAccurateGBufferNormals;
                 _material.DisableKeyword("_LOOGA_SEPARATE_CLIPMAPS");
                 ConfigureInput(GetRequiredInputs(_normalsSource));
             }
@@ -996,9 +1063,9 @@ namespace LoogaSoft.Shadows
                 TextureHandle cameraDepth = resourceData.cameraDepthTexture.IsValid()
                     ? resourceData.cameraDepthTexture
                     : resourceData.activeDepthTexture;
-                TextureHandle cameraNormals = _requiresCameraNormals
-                    ? resourceData.cameraNormalsTexture
-                    : TextureHandle.nullHandle;
+                TextureHandle cameraNormals = GetNormalsTexture(
+                    resourceData,
+                    _normalsSource);
                 if (!clipmap0.IsValid() || !clipmap1.IsValid() ||
                     !clipmap2.IsValid() || !clipmap3.IsValid() ||
                     !depthClipmap0.IsValid() || !depthClipmap1.IsValid() ||
@@ -1069,6 +1136,7 @@ namespace LoogaSoft.Shadows
                 passData.LightDirection = _lightDirection;
                 passData.NormalsSource = _normalsSource;
                 passData.RequiresCameraNormals = _requiresCameraNormals;
+                passData.NormalsOctEncoded = _normalsOctEncoded;
 
                 builder.UseAllGlobalTextures(true);
                 builder.UseTexture(clipmap0, AccessFlags.Read);
@@ -1301,6 +1369,9 @@ namespace LoogaSoft.Shadows
                 command.SetGlobalInteger(
                     LoogaShadowShaderIds.NormalsSource,
                     (int)data.NormalsSource);
+                command.SetGlobalInteger(
+                    LoogaShadowShaderIds.NormalsOctEncoded,
+                    data.NormalsOctEncoded ? 1 : 0);
             }
         }
 
@@ -1514,6 +1585,7 @@ namespace LoogaSoft.Shadows
             private LoogaShadowDebugView _debugView;
             private LoogaShadowNormalsSource _normalsSource;
             private bool _requiresCameraNormals;
+            private bool _normalsOctEncoded;
 
             private sealed class PassData
             {
@@ -1540,6 +1612,7 @@ namespace LoogaSoft.Shadows
                 public Vector3 LightDirection;
                 public LoogaShadowNormalsSource NormalsSource;
                 public bool RequiresCameraNormals;
+                public bool NormalsOctEncoded;
             }
 
             public void Setup(
@@ -1550,7 +1623,8 @@ namespace LoogaSoft.Shadows
                 Vector4[] clipmapRadii,
                 Vector4[] clipmapRects,
                 Vector3 lightDirection,
-                bool usesDeferredLighting)
+                bool usesDeferredLighting,
+                bool usesAccurateGBufferNormals)
             {
                 _material = material;
                 _settings = settings;
@@ -1565,6 +1639,8 @@ namespace LoogaSoft.Shadows
                     usesDeferredLighting);
                 _requiresCameraNormals =
                     _normalsSource != LoogaShadowNormalsSource.ReconstructFromDepth;
+                _normalsOctEncoded =
+                    _requiresCameraNormals && usesAccurateGBufferNormals;
                 ConfigureInput(GetRequiredInputs(_normalsSource));
             }
 
@@ -1598,9 +1674,9 @@ namespace LoogaSoft.Shadows
                 TextureHandle cameraDepth = resourceData.cameraDepthTexture.IsValid()
                     ? resourceData.cameraDepthTexture
                     : resourceData.activeDepthTexture;
-                TextureHandle cameraNormals = _requiresCameraNormals
-                    ? resourceData.cameraNormalsTexture
-                    : TextureHandle.nullHandle;
+                TextureHandle cameraNormals = GetNormalsTexture(
+                    resourceData,
+                    _normalsSource);
                 if (!cameraDepth.IsValid() ||
                     (_requiresCameraNormals && !cameraNormals.IsValid()))
                     return;
@@ -1639,6 +1715,7 @@ namespace LoogaSoft.Shadows
                 passData.LightDirection = _lightDirection;
                 passData.NormalsSource = _normalsSource;
                 passData.RequiresCameraNormals = _requiresCameraNormals;
+                passData.NormalsOctEncoded = _normalsOctEncoded;
                 builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
                 builder.UseTexture(clipmap0, AccessFlags.Read);
                 builder.UseTexture(clipmap1, AccessFlags.Read);
@@ -1750,6 +1827,9 @@ namespace LoogaSoft.Shadows
                     context.cmd.SetGlobalInteger(
                         LoogaShadowShaderIds.NormalsSource,
                         (int)data.NormalsSource);
+                    context.cmd.SetGlobalInteger(
+                        LoogaShadowShaderIds.NormalsOctEncoded,
+                        data.NormalsOctEncoded ? 1 : 0);
                     if (data.RequiresCameraNormals)
                     {
                         context.cmd.SetGlobalTexture(

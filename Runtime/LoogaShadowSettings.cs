@@ -44,11 +44,11 @@ namespace LoogaSoft.Shadows
         private float _maximumPenumbra;
 
         [SerializeField, Range(0f, 0.02f)]
-        [Tooltip("World-space receiver depth bias in meters.")]
+        [Tooltip("World-space depth-bias floor used for caster capture and receiver comparison.")]
         private float _depthBias;
 
         [SerializeField, Range(0f, 0.1f)]
-        [Tooltip("Offsets receivers along their surface normal to reduce grazing-angle acne.")]
+        [Tooltip("World-space normal-bias floor applied while rendering shadow casters.")]
         private float _normalBias;
 
         [SerializeField, Range(0f, 0.25f)]
